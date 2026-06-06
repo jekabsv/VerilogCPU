@@ -1,7 +1,6 @@
 
-
 module ALU (
-    input wire [3:0]  alu_control, // {Instruction[30], funct3}
+    input wire [3:0]   alu_control, // {Instruction[30], funct3}
     input wire [31:0] operand_a, // rs1
     input wire [31:0] operand_b, // rs2  or immediate
     
