@@ -14,7 +14,6 @@ module Registry (
 );
 
     reg [31:0] registers [31:0];
-    registers[0] = 32'b0;
 
     always @(*) begin
         rs1_data = registers[rs1_addr];
@@ -22,9 +21,9 @@ module Registry (
     end
 
     always @(posedge clk or posedge rst) begin
-        if (rst) begin
+        if (rst) begin : rst_loop
             integer i;
-            for (i = 0; i < 31; i = i + 1) begin
+            for (i = 0; i < 32; i = i + 1) begin
                 registers[i] <= 32'b0;
             end
         end else if (reg_write_enable && rd_addr != 5'b00000) begin
