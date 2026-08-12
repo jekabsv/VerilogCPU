@@ -31,7 +31,7 @@ module CPU_tb;
                   .uart_rx(4'b1111), .uart_tx());
     always #5 clk = ~clk;
 
-    localparam integer NWORDS = 286;
+    localparam integer NWORDS = 312;
     reg [31:0] prog [0:NWORDS-1];
 
     task load_word; input integer idx; input [31:0] w; begin
@@ -72,6 +72,19 @@ module CPU_tb;
             $display("  FAIL %0s = %08h  expected %08h", nm, rdw(adr), exp);
         end else $display("  ok   %0s = %08h", nm, exp);
     end endtask
+
+    // Drives a fresh 0->1 edge on gpio_in_r[3] once the program's INT_RISE_EN
+    // store (address 0x488, see prog[290] below) is in Decode/Execute, i.e.
+    // right after GPIO_INT_ENABLE and GPIO_INT_RISE_EN are both armed for pin
+    // 3. PC-synchronized rather than time-synchronized so it doesn't depend on
+    // guessing how many cycles the trap section above took to run.
+    initial begin
+        wait (dut.cpu.PC_decode === 32'h488);
+        @(posedge clk); #1;
+        gpio_in_r[3] = 1'b0;
+        #40;                        // >> 2-flop synchronizer settle time
+        gpio_in_r[3] = 1'b1;        // rising edge while INT_ENABLE/RISE_EN armed
+    end
 
     initial begin
         for (i = 0; i < 65536; i = i + 1) dut.bram.DataMem[i] = 8'h00;
@@ -350,24 +363,60 @@ module CPU_tb;
         prog[267] = 32'h0080006f;   // jal x0,DONE
         prog[268] = 32'h30401073;   // INT: csrrw x0,mie,x0
         prog[269] = 32'h30200073;   // DONE: MRET
-        // ===== GPIO test: pins driven by instructions =====
-        // outputs: set pins 0,5,31 high via SW ; inputs: pin7(=1) loop-accumulated x5 + pin3(=1)
-        prog[270] = 32'hf0000393;   // addi x7,x0,-256   slot0 base 0xFFFFFF00
-        prog[271] = 32'h00100093;   // addi x1,x0,1
-        prog[272] = 32'h0013a023;   // sw x1,0(x7)       pin0=1
-        prog[273] = 32'h0013aa23;   // sw x1,20(x7)      pin5=1
-        prog[274] = 32'h0613ae23;   // sw x1,124(x7)     pin31=1
-        prog[275] = 32'hf1c00393;   // addi x7,x0,-228   slot7 addr (pin7)
-        prog[276] = 32'h00000313;   // addi x6,x0,0      accum=0
-        prog[277] = 32'h00500193;   // addi x3,x0,5      count=5
-        prog[278] = 32'h0003a083;   // loop: lw x1,0(x7) x1=pin7
-        prog[279] = 32'h00130333;   // add x6,x6,x1      accum+=pin7
-        prog[280] = 32'hfff18193;   // addi x3,x3,-1
-        prog[281] = 32'hfe019ae3;   // bne x3,x0,loop
-        prog[282] = 32'hf0c00393;   // addi x7,x0,-244   slot3 addr (pin3)
-        prog[283] = 32'h0003a083;   // lw x1,0(x7)       x1=pin3
-        prog[284] = 32'h00130333;   // add x6,x6,x1      accum=6
-        prog[285] = 32'h0000006f;   // jal x0,0          spin
+        // ===== GPIO test: banked registers driven by instructions =====
+        // outputs: DIR+SET drive pins 0,5,31 high ; inputs: pin7(=1) loop-accumulated
+        // x5 times + pin3(=1), read back through DATA_IN (bit-sliced with srli/andi
+        // since DATA_IN is now one 32-bit word for all 32 pins, not a per-pin slot).
+        // Tail: arms a GPIO edge interrupt on pin3 (INT_ENABLE+INT_RISE_EN), the
+        // testbench forces a fresh 0->1 edge on gpio_in_r[3] once PC_decode reaches
+        // the INT_RISE_EN store (0x488, see the sync block below #12 rst=0), then the
+        // program reads INT_PENDING, clears it (write-1-to-clear), and re-reads it.
+        prog[270] = 32'hf0000393;   // 438: addi x7,x0,-256   GPIO base 0xFFFFFF00
+        prog[271] = 32'h02100093;   // 43c: addi x1,x0,0x21   pins 0,5
+        prog[272] = 32'h800001b7;   // 440: lui  x3,0x80000   pin 31 (x3: temp, reinit'd as loop count below)
+        prog[273] = 32'h0030e0b3;   // 444: or   x1,x1,x3     x1=0x80000021
+        prog[274] = 32'h0013a423;   // 448: sw x1,8(x7)       DIR = 0x80000021
+        prog[275] = 32'h0013a623;   // 44c: sw x1,12(x7)      SET -> DATA_OUT bits 0,5,31
+        prog[276] = 32'h00000313;   // 450: addi x6,x0,0      accum=0
+        prog[277] = 32'h00500193;   // 454: addi x3,x0,5      count=5
+        prog[278] = 32'h0003a083;   // 458: loop: lw x1,0(x7) x1=DATA_IN
+        prog[279] = 32'h0070d093;   // 45c: srli x1,x1,7
+        prog[280] = 32'h0010f093;   // 460: andi x1,x1,1      x1=pin7 bit
+        prog[281] = 32'h00130333;   // 464: add x6,x6,x1      accum+=pin7
+        prog[282] = 32'hfff18193;   // 468: addi x3,x3,-1
+        prog[283] = 32'hfe0196e3;   // 46c: bne x3,x0,loop
+        prog[284] = 32'h0003a083;   // 470: lw x1,0(x7)       x1=DATA_IN
+        prog[285] = 32'h0030d093;   // 474: srli x1,x1,3
+        prog[286] = 32'h0010f093;   // 478: andi x1,x1,1      x1=pin3 bit
+        prog[287] = 32'h00130333;   // 47c: add x6,x6,x1      accum+=pin3 -> x6=6
+        // Note: x2 and x4 are checked against the base program's values by the
+        // generic ckreg loop below, so this tail (like the rest of the trap/GPIO
+        // sections) only ever touches x1/x3/x6/x7. x6 is temporarily repurposed
+        // as a log-address pointer and restored to 6 just before the final spin.
+        prog[288] = 32'h00800093;   // 480: addi x1,x0,8      pin3 mask
+        prog[289] = 32'h0013aa23;   // 484: sw x1,20(x7)      INT_ENABLE = bit3
+        prog[290] = 32'h0013ac23;   // 488: sw x1,24(x7)      INT_RISE_EN = bit3  <-- tb syncs toggle here
+        prog[291] = 32'h00000013;   // 48c: nop (settle: sync0/sync1/sync1_d + toggle low/high)
+        prog[292] = 32'h00000013;   // 490: nop
+        prog[293] = 32'h00000013;   // 494: nop
+        prog[294] = 32'h00000013;   // 498: nop
+        prog[295] = 32'h00000013;   // 49c: nop
+        prog[296] = 32'h00000013;   // 4a0: nop
+        prog[297] = 32'h00000013;   // 4a4: nop
+        prog[298] = 32'h00000013;   // 4a8: nop
+        prog[299] = 32'h00000013;   // 4ac: nop
+        prog[300] = 32'h00000013;   // 4b0: nop
+        prog[301] = 32'h0203a183;   // 4b4: lw x3,32(x7)      x3=INT_PENDING
+        prog[302] = 32'h30000313;   // 4b8: addi x6,x0,0x300  log addr (pending, pre-clear) [x6 scratch]
+        prog[303] = 32'h00332023;   // 4bc: sw x3,0(x6)
+        prog[304] = 32'h0213a023;   // 4c0: sw x1,32(x7)      INT_PENDING write-1-clear bit3
+        prog[305] = 32'h00000013;   // 4c4: nop
+        prog[306] = 32'h00000013;   // 4c8: nop
+        prog[307] = 32'h0203a183;   // 4cc: lw x3,32(x7)      x3=INT_PENDING (post-clear)
+        prog[308] = 32'h30400313;   // 4d0: addi x6,x0,0x304  log addr (pending, post-clear)
+        prog[309] = 32'h00332023;   // 4d4: sw x3,0(x6)
+        prog[310] = 32'h00600313;   // 4d8: addi x6,x0,6      restore x6=6 for the final GPIO check
+        prog[311] = 32'h0000006f;   // 4dc: jal x0,0          spin
 
         for (i = 0; i < NWORDS; i = i + 1) load_word(i, prog[i]);
 
@@ -493,12 +542,17 @@ module CPU_tb;
         $display("==== GPIO checks ====");
         if (gpio_out_w !== 32'h80000021) begin errors=errors+1;
             $display("  FAIL gpio_out = %08h  expected 80000021", gpio_out_w); end
-        else $display("  ok   gpio_out = 80000021 (pins 0,5,31 set by SW stores)");
+        else $display("  ok   gpio_out = 80000021 (pins 0,5,31 set by DIR+SET)");
         if (dut.cpu.registry.registers[6] !== 32'd6) begin errors=errors+1;
             $display("  FAIL x6 = %0d  expected 6", dut.cpu.registry.registers[6]); end
         else $display("  ok   x6 = 6 (pin7 read+incremented 5x in a loop, + pin3)");
+
+        $display("==== GPIO interrupt checks ====");
+        cklog(16'h0300, 32'h00000008, "G1 pin3 pending set  ");
+        cklog(16'h0304, 32'h00000000, "G2 pin3 pending clear");
+
         $display("========================");
-        if (errors == 0) $display("ALL TESTS PASSED (26 reg, 42 mem, +CSR, 11 forward, 12 trap, 2 gpio)");
+        if (errors == 0) $display("ALL TESTS PASSED (26 reg, 42 mem, +CSR, 11 forward, 12 trap, 2 gpio, 2 gpio-irq)");
         else $display("FAILED: %0d error(s)", errors);
         $finish;
     end

@@ -1,12 +1,21 @@
 // 8N1 UART with TX and RX FIFOs.
 //
-// Bus side (2 word slots per UART):
-//   DATA   (offset 0): write pushes a byte to TX FIFO; read pops RX FIFO head
-//   STATUS (offset 1): read-only flags
+// Bus side (4 word slots per UART):
+//   DATA        (offset 0): write pushes a byte to TX FIFO; read pops RX FIFO head
+//   STATUS      (offset 1): read-only flags
 //                      bit0 TX_READY (TX FIFO not full)
 //                      bit1 TX_EMPTY (TX FIFO empty and line idle)
 //                      bit2 RX_VALID (RX FIFO not empty)
 //                      bit3 RX_FULL  (RX FIFO full / possible overrun)
+//   INT_ENABLE  (offset 2): level-sensitive interrupt arm bits
+//                      bit0 RX_IE     (irq while RX FIFO non-empty)
+//                      bit1 TX_IE     (irq while TX FIFO empty & line idle)
+//                      bit2 RXFULL_IE (irq while RX FIFO full / overrun)
+//   reserved    (offset 3)
+//
+// `irq` is the OR of the three armed conditions above; it self-clears once
+// the underlying FIFO condition clears or the IE bit is disabled -- there is
+// no separate pending/clear register for it.
 //
 // Serial side: tx (output line), rx (input line), 8 data bits, 1 stop bit.
 // CLKS_PER_BIT sets the baud rate = clk / CLKS_PER_BIT.
@@ -22,9 +31,18 @@ module UART #(
     input  wire        wr_en,       // store strobe to DATA (push TX)
     input  wire [7:0]  wr_data,     // byte to transmit
     input  wire        rd_data_en,  // load strobe to DATA (pop RX)
-    input  wire        rd_sel,      // 0: rdata=DATA(rx head), 1: rdata=STATUS
-    output wire [31:0] rdata
+    input  wire        ier_wr_en,   // store strobe to INT_ENABLE
+    input  wire [2:0]  ier_wr_data,
+    input  wire [1:0]  reg_sel,     // 0:DATA 1:STATUS 2:INT_ENABLE 3:reserved
+    output wire [31:0] rdata,
+    output wire        irq
 );
+
+    reg [2:0] ier;
+    always @(posedge clk or posedge rst) begin
+        if (rst) ier <= 3'b000;
+        else if (ier_wr_en) ier <= ier_wr_data;
+    end
 
     // ---------------- TX FIFO (depth 8) ----------------
     reg  [7:0] txbuf [0:7];
@@ -157,8 +175,15 @@ module UART #(
 
     assign tx = tx_line;
 
-    wire [7:0]  rx_head = rxbuf[rx_rd];
-    wire [31:0] status  = {28'b0, rx_full, !rx_empty, (tx_empty && tx_state==TX_IDLE), !tx_full};
-    assign rdata = rd_sel ? status : {24'b0, rx_head};
+    wire [7:0]  rx_head   = rxbuf[rx_rd];
+    wire        tx_idle_empty = (tx_empty && tx_state==TX_IDLE);
+    wire [31:0] status    = {28'b0, rx_full, !rx_empty, tx_idle_empty, !tx_full};
+    wire [31:0] ier_word  = {29'b0, ier};
+
+    assign rdata = (reg_sel == 2'd1) ? status :
+                   (reg_sel == 2'd2) ? ier_word :
+                                       {24'b0, rx_head};
+
+    assign irq = (ier[0] & !rx_empty) | (ier[1] & tx_idle_empty) | (ier[2] & rx_full);
 
 endmodule
