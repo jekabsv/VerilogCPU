@@ -42,7 +42,16 @@
 // MMIO; it now shares the same backing storage as load/store (see BRAM.v),
 // so program-space constants are reachable by ordinary loads too.
 module TopLayer #(
-    parameter CLKS_PER_BIT = 16
+    parameter CLKS_PER_BIT = 16,
+    parameter BOOTLOADER   = 0   // 1 = preload BRAM with the UART bootloader
+                                 // at address 0 (see the boot_preload generate
+                                 // block below). Off by default so existing
+                                 // testbenches that load their own program
+                                 // into BRAM are unaffected; a Verilator/C++
+                                 // top level should instantiate this with
+                                 // BOOTLOADER=1 so the compiled model boots
+                                 // ready to receive a program over UART0
+                                 // without any C++-side memory poking.
 ) (
     input  wire        clk,
     input  wire        rst,
@@ -115,6 +124,67 @@ module TopLayer #(
         .write_mode(bram_write_mode),
         .read_mode(mem_read_mode)
     );
+
+    // ---- UART bootloader preload (BOOTLOADER=1 only) ----
+    // Writes the boot words directly into bram.Mem at elaboration time (an
+    // `initial` block, same mechanism FPGA tools use to give BRAM its power-on
+    // contents). Protocol it implements: host sends a 4-byte little-endian
+    // WORD count over UART0, then that many 32-bit words as 4 little-endian
+    // bytes each; the loader stores them at PROG_BASE=0x1000 and jumps there.
+    // See BootTb.v for a from-scratch simulation proof this actually runs.
+    generate
+        if (BOOTLOADER) begin : boot_preload
+            integer bi;
+            reg [31:0] boot_words [0:32];
+            initial begin
+                // Own the whole array's initial state ourselves (rather than
+                // relying on a testbench-side zero-init loop racing this
+                // `initial` block at time 0) so BOOTLOADER=1 is deterministic
+                // on its own.
+                for (bi = 0; bi < 65536; bi = bi + 1) bram.Mem[bi] = 8'h00;
+
+                boot_words[ 0] = 32'hf4000093; // addi x1,x0,-192   UBASE = UART0 base
+                boot_words[ 1] = 32'h00000113; // addi x2,x0,0      LEN = 0
+                boot_words[ 2] = 32'h00000213; // addi x4,x0,0      CNT = byte-in-word counter
+                boot_words[ 3] = 32'h0040a483; // LEN_BYTE: lw x9,4(x1)  STATUS
+                boot_words[ 4] = 32'h0044f493; // andi x9,x9,4      RX_VALID bit
+                boot_words[ 5] = 32'hfe048ce3; // beq x9,x0,LEN_BYTE
+                boot_words[ 6] = 32'h0000a303; // lw x6,0(x1)       received byte
+                boot_words[ 7] = 32'h00321393; // slli x7,x4,3
+                boot_words[ 8] = 32'h00731433; // sll x8,x6,x7
+                boot_words[ 9] = 32'h00816133; // or x2,x2,x8       LEN |= x8
+                boot_words[10] = 32'h00120213; // addi x4,x4,1
+                boot_words[11] = 32'h00400493; // addi x9,x0,4
+                boot_words[12] = 32'hfc921ee3; // bne x4,x9,LEN_BYTE
+                boot_words[13] = 32'h000011b7; // lui x3,0x1        DST = PROG_BASE = 0x1000
+                boot_words[14] = 32'h04010263; // beq x2,x0,RUN     zero-length guard
+                boot_words[15] = 32'h00000293; // WORD_LOOP: addi x5,x0,0  WORD = 0
+                boot_words[16] = 32'h00000213; // addi x4,x0,0
+                boot_words[17] = 32'h0040a483; // BYTE_LOOP: lw x9,4(x1)  STATUS
+                boot_words[18] = 32'h0044f493; // andi x9,x9,4
+                boot_words[19] = 32'hfe048ce3; // beq x9,x0,BYTE_LOOP
+                boot_words[20] = 32'h0000a303; // lw x6,0(x1)
+                boot_words[21] = 32'h00321393; // slli x7,x4,3
+                boot_words[22] = 32'h00731433; // sll x8,x6,x7
+                boot_words[23] = 32'h0082e2b3; // or x5,x5,x8       WORD |= x8
+                boot_words[24] = 32'h00120213; // addi x4,x4,1
+                boot_words[25] = 32'h00400493; // addi x9,x0,4
+                boot_words[26] = 32'hfc921ee3; // bne x4,x9,BYTE_LOOP
+                boot_words[27] = 32'h0051a023; // sw x5,0(x3)       store instruction word
+                boot_words[28] = 32'h00418193; // addi x3,x3,4      DST += 4
+                boot_words[29] = 32'hfff10113; // addi x2,x2,-1     LEN--
+                boot_words[30] = 32'hfc0112e3; // bne x2,x0,WORD_LOOP
+                boot_words[31] = 32'h000011b7; // RUN: lui x3,0x1   reload PROG_BASE
+                boot_words[32] = 32'h00018067; // jalr x0,0(x3)     jump to the loaded program
+                for (bi = 0; bi < 33; bi = bi + 1) begin
+                    bram.Mem[bi*4+0] = boot_words[bi][7:0];
+                    bram.Mem[bi*4+1] = boot_words[bi][15:8];
+                    bram.Mem[bi*4+2] = boot_words[bi][23:16];
+                    bram.Mem[bi*4+3] = boot_words[bi][31:24];
+                end
+            end
+        end
+    endgenerate
 
     // ---- GPIO bank: slots 0..8 ----
     wire [3:0]  gpio_waddr = mmio_write_slot[3:0];
