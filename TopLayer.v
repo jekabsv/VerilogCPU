@@ -43,7 +43,7 @@
 // so program-space constants are reachable by ordinary loads too.
 module TopLayer #(
     parameter CLKS_PER_BIT = 16,
-    parameter BOOTLOADER   = 0   // 1 = preload BRAM with the UART bootloader
+    parameter BOOTLOADER   = 1   // 1 = preload BRAM with the UART bootloader
                                  // at address 0 (see the boot_preload generate
                                  // block below). Off by default so existing
                                  // testbenches that load their own program
