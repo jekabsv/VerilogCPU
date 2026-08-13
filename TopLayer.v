@@ -6,7 +6,8 @@
 // TopLayer: CPU + RAM (BRAM) + MMIO (GPIO bank, 4x UART, CLINT) rerouting.
 //
 // Address map (load/store effective address is full 32-bit from the CPU):
-//   0x00000000 .. 0x0000FFFF   RAM  (BRAM DataMem, indexed by addr[15:0])
+//   0x00000000 .. 0x0000FFFF   RAM  (BRAM's unified Mem, indexed by addr[15:0] --
+//                               shared by fetch and load/store, see BRAM.v)
 //   0xFFFFFF00 .. 0xFFFFFFFF   MMIO (top 256 bytes = 64 word slots)
 //
 // MMIO slot = addr[7:2] (0..63):
@@ -37,7 +38,9 @@
 // polling every device; the exact cause within that peripheral (which GPIO
 // pin, RX vs TX) still comes from that peripheral's own registers.
 //
-// Instruction fetch uses BRAM.InstructionMem only and never reaches MMIO.
+// Instruction fetch addresses BRAM's unified Mem directly and never reaches
+// MMIO; it now shares the same backing storage as load/store (see BRAM.v),
+// so program-space constants are reachable by ordinary loads too.
 module TopLayer #(
     parameter CLKS_PER_BIT = 16
 ) (

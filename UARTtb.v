@@ -59,17 +59,17 @@ module UART_tb;
     reg [31:0] pirq [0:3];
 
     task LT; input integer a; input [31:0] w; begin
-        dut_tx.bram.InstructionMem[a*4+0]=w[7:0];   dut_tx.bram.InstructionMem[a*4+1]=w[15:8];
-        dut_tx.bram.InstructionMem[a*4+2]=w[23:16]; dut_tx.bram.InstructionMem[a*4+3]=w[31:24]; end endtask
+        dut_tx.bram.Mem[a*4+0]=w[7:0];   dut_tx.bram.Mem[a*4+1]=w[15:8];
+        dut_tx.bram.Mem[a*4+2]=w[23:16]; dut_tx.bram.Mem[a*4+3]=w[31:24]; end endtask
     task LR; input integer a; input [31:0] w; begin
-        dut_rx.bram.InstructionMem[a*4+0]=w[7:0];   dut_rx.bram.InstructionMem[a*4+1]=w[15:8];
-        dut_rx.bram.InstructionMem[a*4+2]=w[23:16]; dut_rx.bram.InstructionMem[a*4+3]=w[31:24]; end endtask
+        dut_rx.bram.Mem[a*4+0]=w[7:0];   dut_rx.bram.Mem[a*4+1]=w[15:8];
+        dut_rx.bram.Mem[a*4+2]=w[23:16]; dut_rx.bram.Mem[a*4+3]=w[31:24]; end endtask
     task LL; input integer a; input [31:0] w; begin
-        dut_loop.bram.InstructionMem[a*4+0]=w[7:0];   dut_loop.bram.InstructionMem[a*4+1]=w[15:8];
-        dut_loop.bram.InstructionMem[a*4+2]=w[23:16]; dut_loop.bram.InstructionMem[a*4+3]=w[31:24]; end endtask
+        dut_loop.bram.Mem[a*4+0]=w[7:0];   dut_loop.bram.Mem[a*4+1]=w[15:8];
+        dut_loop.bram.Mem[a*4+2]=w[23:16]; dut_loop.bram.Mem[a*4+3]=w[31:24]; end endtask
     task LI; input integer a; input [31:0] w; begin
-        dut_irq.bram.InstructionMem[a*4+0]=w[7:0];   dut_irq.bram.InstructionMem[a*4+1]=w[15:8];
-        dut_irq.bram.InstructionMem[a*4+2]=w[23:16]; dut_irq.bram.InstructionMem[a*4+3]=w[31:24]; end endtask
+        dut_irq.bram.Mem[a*4+0]=w[7:0];   dut_irq.bram.Mem[a*4+1]=w[15:8];
+        dut_irq.bram.Mem[a*4+2]=w[23:16]; dut_irq.bram.Mem[a*4+3]=w[31:24]; end endtask
 
     // ---- testbench-side TX serial decoder (watches tx0) ----
     reg [7:0] tx_decoded; reg tx_done;
@@ -115,8 +115,8 @@ module UART_tb;
     integer errors = 0;
     initial begin
         for (i=0;i<65536;i=i+1) begin
-            dut_tx.bram.DataMem[i]=8'h00; dut_rx.bram.DataMem[i]=8'h00; dut_loop.bram.DataMem[i]=8'h00;
-            dut_irq.bram.DataMem[i]=8'h00;
+            dut_tx.bram.Mem[i]=8'h00; dut_rx.bram.Mem[i]=8'h00; dut_loop.bram.Mem[i]=8'h00;
+            dut_irq.bram.Mem[i]=8'h00;
         end
         // TX program: send 0x5A on UART0 (base -192 = 0xFFFFFF40, DATA @ +0)
         ptx[0]=32'hf4000293; ptx[1]=32'h05a00313; ptx[2]=32'h0062a023; ptx[3]=32'h0000006f;

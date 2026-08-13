@@ -8,7 +8,7 @@
 // handler (prog[256..268]).
 //
 // Trap section (all traps go through mtvec, handler logs {mcause,mtval} to
-// DataMem starting at 1024 and advances an 8-byte cursor in x7):
+// memory starting at 0x5000 and advances an 8-byte cursor in x7):
 //   - ECALL   -> mcause 11, mtval 0
 //   - EBREAK  -> mcause 3,  mtval = PC of the EBREAK
 //   - illegal -> mcause 2,  mtval = instruction word (0x0000000b)
@@ -31,14 +31,14 @@ module CPU_tb;
                   .uart_rx(4'b1111), .uart_tx());
     always #5 clk = ~clk;
 
-    localparam integer NWORDS = 312;
+    localparam integer NWORDS = 311;
     reg [31:0] prog [0:NWORDS-1];
 
     task load_word; input integer idx; input [31:0] w; begin
-        dut.bram.InstructionMem[idx*4+0] = w[7:0];
-        dut.bram.InstructionMem[idx*4+1] = w[15:8];
-        dut.bram.InstructionMem[idx*4+2] = w[23:16];
-        dut.bram.InstructionMem[idx*4+3] = w[31:24];
+        dut.bram.Mem[idx*4+0] = w[7:0];
+        dut.bram.Mem[idx*4+1] = w[15:8];
+        dut.bram.Mem[idx*4+2] = w[23:16];
+        dut.bram.Mem[idx*4+3] = w[31:24];
     end endtask
 
     task ckreg; input [4:0] r; input [31:0] exp; begin
@@ -49,14 +49,14 @@ module CPU_tb;
     end endtask
 
     task ckmem; input [15:0] adr; input [7:0] exp; begin
-        if (dut.bram.DataMem[adr] !== exp) begin
+        if (dut.bram.Mem[adr] !== exp) begin
             errors = errors + 1;
-            $display("  FAIL mem[%04h] = %02h  expected %02h", adr, dut.bram.DataMem[adr], exp);
+            $display("  FAIL mem[%04h] = %02h  expected %02h", adr, dut.bram.Mem[adr], exp);
         end
     end endtask
 
     function [31:0] rdw; input [15:0] adr; begin
-        rdw = {dut.bram.DataMem[adr+3], dut.bram.DataMem[adr+2], dut.bram.DataMem[adr+1], dut.bram.DataMem[adr]};
+        rdw = {dut.bram.Mem[adr+3], dut.bram.Mem[adr+2], dut.bram.Mem[adr+1], dut.bram.Mem[adr]};
     end endfunction
 
     task ckfw; input [15:0] adr; input [31:0] exp; input [255:0] nm; begin
@@ -87,7 +87,7 @@ module CPU_tb;
     end
 
     initial begin
-        for (i = 0; i < 65536; i = i + 1) dut.bram.DataMem[i] = 8'h00;
+        for (i = 0; i < 65536; i = i + 1) dut.bram.Mem[i] = 8'h00;
         for (i = 0; i < NWORDS; i = i + 1) prog[i] = 32'h00000013;
         gpio_in_r = 32'b0; gpio_in_r[3] = 1'b1; gpio_in_r[7] = 1'b1;
 
@@ -98,7 +98,7 @@ module CPU_tb;
         prog[4] = 32'h00c00093;   // 010: addi x1,x0,12
         prog[5] = 32'h00500113;   // 014: addi x2,x0,5
         prog[6] = 32'hfec00313;   // 018: addi x6,x0,-20
-        prog[7] = 32'h10000193;   // 01c: addi x3,x0,256
+        prog[7] = 32'h000041b7;   // 01c: lui x3,0x4        x3=0x4000 (data region base; was addi x3,x0,256)
         prog[8] = 32'h00000013;   // 020: nop
         prog[9] = 32'h00000013;   // 024: nop
         prog[10] = 32'h00308413;   // 028: addi x8,x1,3
@@ -299,7 +299,7 @@ module CPU_tb;
         prog[205] = 32'h05a00113;   // 334: addi x2,x0,0x5A
         prog[206] = 32'h00000013;   // 338: nop
         prog[207] = 32'h00000013;   // 33c: nop
-        prog[208] = 32'h10000093;   // 340: addi x1,x0,256
+        prog[208] = 32'h000040b7;   // 340: lui x1,0x4        x1=0x4000 (was addi x1,x0,256; F10 base-fwd test)
         prog[209] = 32'h0e208223;   // 344: sb x2,228(x1)
         prog[210] = 32'h35c00393;   // 348: addi x7,x0,POISON
         prog[211] = 32'h00000013;   // 34c: nop
@@ -322,7 +322,7 @@ module CPU_tb;
         // ===== trap / interrupt test section (timer armed via memory-mapped CLINT) =====
         prog[227] = 32'h40400093;   // addi x1,x0,0x404 (mtvec=handler)
         prog[228] = 32'h30509073;   // csrrw x0,mtvec,x1
-        prog[229] = 32'h40000393;   // addi x7,x0,1024 log base
+        prog[229] = 32'h000053b7;   // lui x7,0x5   x7=0x5000 log base (was addi x7,x0,1024)
         prog[230] = 32'h00000073;   // ECALL
         prog[231] = 32'h00000013;   // nop
         prog[232] = 32'h00000013;   // nop
@@ -393,6 +393,10 @@ module CPU_tb;
         // generic ckreg loop below, so this tail (like the rest of the trap/GPIO
         // sections) only ever touches x1/x3/x6/x7. x6 is temporarily repurposed
         // as a log-address pointer and restored to 6 just before the final spin.
+        // Log addresses use 0x6000+ (built via lui, one instruction, reused for
+        // both writes) rather than small absolute immediates, since 0x300/0x304
+        // now fall inside this program's own instruction footprint once BRAM
+        // shares one array between fetch and load/store (see BRAM.v).
         prog[288] = 32'h00800093;   // 480: addi x1,x0,8      pin3 mask
         prog[289] = 32'h0013aa23;   // 484: sw x1,20(x7)      INT_ENABLE = bit3
         prog[290] = 32'h0013ac23;   // 488: sw x1,24(x7)      INT_RISE_EN = bit3  <-- tb syncs toggle here
@@ -407,16 +411,15 @@ module CPU_tb;
         prog[299] = 32'h00000013;   // 4ac: nop
         prog[300] = 32'h00000013;   // 4b0: nop
         prog[301] = 32'h0203a183;   // 4b4: lw x3,32(x7)      x3=INT_PENDING
-        prog[302] = 32'h30000313;   // 4b8: addi x6,x0,0x300  log addr (pending, pre-clear) [x6 scratch]
-        prog[303] = 32'h00332023;   // 4bc: sw x3,0(x6)
+        prog[302] = 32'h00006337;   // 4b8: lui x6,0x6        log base 0x6000 [x6 scratch]
+        prog[303] = 32'h00332023;   // 4bc: sw x3,0(x6)       log pending, pre-clear -> 0x6000
         prog[304] = 32'h0213a023;   // 4c0: sw x1,32(x7)      INT_PENDING write-1-clear bit3
         prog[305] = 32'h00000013;   // 4c4: nop
         prog[306] = 32'h00000013;   // 4c8: nop
         prog[307] = 32'h0203a183;   // 4cc: lw x3,32(x7)      x3=INT_PENDING (post-clear)
-        prog[308] = 32'h30400313;   // 4d0: addi x6,x0,0x304  log addr (pending, post-clear)
-        prog[309] = 32'h00332023;   // 4d4: sw x3,0(x6)
-        prog[310] = 32'h00600313;   // 4d8: addi x6,x0,6      restore x6=6 for the final GPIO check
-        prog[311] = 32'h0000006f;   // 4dc: jal x0,0          spin
+        prog[308] = 32'h00332223;   // 4d0: sw x3,4(x6)       log pending, post-clear -> 0x6004
+        prog[309] = 32'h00600313;   // 4d4: addi x6,x0,6      restore x6=6 for the final GPIO check
+        prog[310] = 32'h0000006f;   // 4d8: jal x0,0          spin
 
         for (i = 0; i < NWORDS; i = i + 1) load_word(i, prog[i]);
 
@@ -453,48 +456,51 @@ module CPU_tb;
         ckreg(5'd30, 32'hffffffff);
         ckreg(5'd31, 32'h000000ff);
         $display("==== memory checks ====");
-        ckmem(16'h0110, 8'hff);
-        ckmem(16'h0111, 8'h7f);
-        ckmem(16'h0112, 8'hff);
-        ckmem(16'h0113, 8'h7f);
-        ckmem(16'h0114, 8'h7f);
-        ckmem(16'h0115, 8'h00);
-        ckmem(16'h0118, 8'h0f);
-        ckmem(16'h0119, 8'h00);
-        ckmem(16'h011a, 8'h00);
-        ckmem(16'h011b, 8'h00);
-        ckmem(16'h0130, 8'h00);
-        ckmem(16'h0134, 8'h05);
-        ckmem(16'h0138, 8'h07);
-        ckmem(16'h013c, 8'h06);
-        ckmem(16'h0140, 8'h30);
-        ckmem(16'h0144, 8'h3f);
-        ckmem(16'h0160, 8'h00);
-        ckmem(16'h0164, 8'h11);
-        ckmem(16'h0168, 8'h00);
-        ckmem(16'h016c, 8'h11);
-        ckmem(16'h0170, 8'h00);
-        ckmem(16'h0174, 8'h11);
-        ckmem(16'h0178, 8'h00);
-        ckmem(16'h017c, 8'h11);
-        ckmem(16'h0180, 8'h00);
-        ckmem(16'h0184, 8'h11);
-        ckmem(16'h0188, 8'h00);
-        ckmem(16'h018c, 8'h11);
-        ckmem(16'h0190, 8'h11);
-        ckmem(16'h0194, 8'h11);
-        ckmem(16'h01a0, 8'h00);
-        ckmem(16'h01a4, 8'h1c);
-        ckmem(16'h01a5, 8'h02);
-        ckmem(16'h01a6, 8'h00);
-        ckmem(16'h01a7, 8'h00);
-        ckmem(16'h01a8, 8'h11);
-        ckmem(16'h01b0, 8'h00);
-        ckmem(16'h01b4, 8'h40);
-        ckmem(16'h01b5, 8'h02);
-        ckmem(16'h01b6, 8'h00);
-        ckmem(16'h01b7, 8'h00);
-        ckmem(16'h01b8, 8'h11);
+        // Base moved from x3=0x100 to x3=0x4000 (BRAM.v now backs fetch and
+        // load/store with one shared array -- see BRAM.v -- so the old 0x100+
+        // data region would otherwise overlap this program's own instructions).
+        ckmem(16'h4010, 8'hff);
+        ckmem(16'h4011, 8'h7f);
+        ckmem(16'h4012, 8'hff);
+        ckmem(16'h4013, 8'h7f);
+        ckmem(16'h4014, 8'h7f);
+        ckmem(16'h4015, 8'h00);
+        ckmem(16'h4018, 8'h0f);
+        ckmem(16'h4019, 8'h00);
+        ckmem(16'h401a, 8'h00);
+        ckmem(16'h401b, 8'h00);
+        ckmem(16'h4030, 8'h00);
+        ckmem(16'h4034, 8'h05);
+        ckmem(16'h4038, 8'h07);
+        ckmem(16'h403c, 8'h06);
+        ckmem(16'h4040, 8'h30);
+        ckmem(16'h4044, 8'h3f);
+        ckmem(16'h4060, 8'h00);
+        ckmem(16'h4064, 8'h11);
+        ckmem(16'h4068, 8'h00);
+        ckmem(16'h406c, 8'h11);
+        ckmem(16'h4070, 8'h00);
+        ckmem(16'h4074, 8'h11);
+        ckmem(16'h4078, 8'h00);
+        ckmem(16'h407c, 8'h11);
+        ckmem(16'h4080, 8'h00);
+        ckmem(16'h4084, 8'h11);
+        ckmem(16'h4088, 8'h00);
+        ckmem(16'h408c, 8'h11);
+        ckmem(16'h4090, 8'h11);
+        ckmem(16'h4094, 8'h11);
+        ckmem(16'h40a0, 8'h00);
+        ckmem(16'h40a4, 8'h1c);
+        ckmem(16'h40a5, 8'h02);
+        ckmem(16'h40a6, 8'h00);
+        ckmem(16'h40a7, 8'h00);
+        ckmem(16'h40a8, 8'h11);
+        ckmem(16'h40b0, 8'h00);
+        ckmem(16'h40b4, 8'h40);
+        ckmem(16'h40b5, 8'h02);
+        ckmem(16'h40b6, 8'h00);
+        ckmem(16'h40b7, 8'h00);
+        ckmem(16'h40b8, 8'h11);
         $display("==== CSR check ====");
         if (dut.cpu.mscratch !== 32'h0000003e) begin
             errors=errors+1;
@@ -504,32 +510,34 @@ module CPU_tb;
             $display("  ok   mscratch = %08h", dut.cpu.mscratch);
 
         $display("==== forwarding checks ====");
-        ckfw(16'h01c0, 32'h0000000f, "F1 rs1 forward     ");
-        ckfw(16'h01c4, 32'hffffff9c, "F2 rs2 forward     ");
-        ckfw(16'h01c8, 32'h0000000e, "F3 both operands   ");
-        ckfw(16'h01cc, 32'h00000004, "F4 dependency chain");
-        ckfw(16'h01d0, 32'h00000033, "F5 load-use forward");
-        ckfw(16'h01d4, 32'h00000000, "F6 x0 not forwarded");
-        ckfw(16'h01d8, 32'h00000042, "F7 store-data fwd  ");
-        ckfw(16'h01dc, 32'h000000aa, "F8 branch-cond fwd ");
-        if (dut.bram.DataMem[16'h01e4] !== 8'h5a) begin
+        ckfw(16'h40c0, 32'h0000000f, "F1 rs1 forward     ");
+        ckfw(16'h40c4, 32'hffffff9c, "F2 rs2 forward     ");
+        ckfw(16'h40c8, 32'h0000000e, "F3 both operands   ");
+        ckfw(16'h40cc, 32'h00000004, "F4 dependency chain");
+        ckfw(16'h40d0, 32'h00000033, "F5 load-use forward");
+        ckfw(16'h40d4, 32'h00000000, "F6 x0 not forwarded");
+        ckfw(16'h40d8, 32'h00000042, "F7 store-data fwd  ");
+        ckfw(16'h40dc, 32'h000000aa, "F8 branch-cond fwd ");
+        if (dut.bram.Mem[16'h40e4] !== 8'h5a) begin
             errors = errors + 1;
-            $display("  FAIL F10 store-base fwd = %02h  expected 5a", dut.bram.DataMem[16'h01e4]);
+            $display("  FAIL F10 store-base fwd = %02h  expected 5a", dut.bram.Mem[16'h40e4]);
         end else $display("  ok   F10 store-base fwd = 5a");
-        ckfw(16'h01e8, 32'h0000006c, "F9 jalr-target fwd ");
-        ckfw(16'h01f0, 32'h00000001, "F11 CSR forward    ");
+        ckfw(16'h40e8, 32'h0000006c, "F9 jalr-target fwd ");
+        ckfw(16'h40f0, 32'h00000001, "F11 CSR forward    ");
 
         $display("==== trap / interrupt checks ====");
-        cklog(16'd1024, 32'h0000000b, "T1 ecall  mcause   ");
-        cklog(16'd1028, 32'h00000000, "T1 ecall  mtval    ");
-        cklog(16'd1032, 32'h00000003, "T2 ebreak mcause   ");
-        cklog(16'd1036, 32'h000003a4, "T2 ebreak mtval=PC ");
-        cklog(16'd1040, 32'h00000002, "T3 illeg  mcause   ");
-        cklog(16'd1044, 32'h0000000b, "T3 illeg  mtval    ");
-        cklog(16'd1048, 32'h80000007, "T4 timer  mcause   ");
-        cklog(16'd1052, 32'h00000000, "T4 timer  mtval    ");
-        cklog(16'd1056, 32'h8000000b, "T5 extern mcause   ");
-        cklog(16'd1060, 32'h00000000, "T5 extern mtval    ");
+        // Log base moved from x7=1024 (0x400) to x7=0x5000 for the same
+        // shared-memory reason as the x3 region above.
+        cklog(16'h5000, 32'h0000000b, "T1 ecall  mcause   ");
+        cklog(16'h5004, 32'h00000000, "T1 ecall  mtval    ");
+        cklog(16'h5008, 32'h00000003, "T2 ebreak mcause   ");
+        cklog(16'h500c, 32'h000003a4, "T2 ebreak mtval=PC ");
+        cklog(16'h5010, 32'h00000002, "T3 illeg  mcause   ");
+        cklog(16'h5014, 32'h0000000b, "T3 illeg  mtval    ");
+        cklog(16'h5018, 32'h80000007, "T4 timer  mcause   ");
+        cklog(16'h501c, 32'h00000000, "T4 timer  mtval    ");
+        cklog(16'h5020, 32'h8000000b, "T5 extern mcause   ");
+        cklog(16'h5024, 32'h00000000, "T5 extern mtval    ");
         if (dut.cpu.mcause !== 32'h8000000b) begin
             errors=errors+1;
             $display("  FAIL final mcause = %08h  expected 8000000b", dut.cpu.mcause);
@@ -548,8 +556,8 @@ module CPU_tb;
         else $display("  ok   x6 = 6 (pin7 read+incremented 5x in a loop, + pin3)");
 
         $display("==== GPIO interrupt checks ====");
-        cklog(16'h0300, 32'h00000008, "G1 pin3 pending set  ");
-        cklog(16'h0304, 32'h00000000, "G2 pin3 pending clear");
+        cklog(16'h6000, 32'h00000008, "G1 pin3 pending set  ");
+        cklog(16'h6004, 32'h00000000, "G2 pin3 pending clear");
 
         $display("========================");
         if (errors == 0) $display("ALL TESTS PASSED (26 reg, 42 mem, +CSR, 11 forward, 12 trap, 2 gpio, 2 gpio-irq)");
